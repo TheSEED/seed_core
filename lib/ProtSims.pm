@@ -84,35 +84,36 @@ sub blastP {
     else
     {
 	$dbF = $db;
-	if (-e $dbF)
+	my $formatdb_logfile = "$dbF.formatdb.log";
+	
+	if (! -f "$dbF.psq" || (-f $dbF && (-M "$dbF.psq" > -M $dbF)))
 	{
-	    my $formatdb_logfile = "$dbF.formatdb.log";
-	    
-	    if (! ((-e "$dbF.psq") && ((-M "$dbF.psq") < (-M $dbF))))
+	    if (! -f $dbF)
 	    {
-		system($formatdb_cmd, '-i', $dbF, '-l', $formatdb_logfile);
+		die "Protein file $dbF: neither fasta nor indexes are not present";
 	    }
+	    system($formatdb_cmd, '-i', $dbF, '-l', $formatdb_logfile);
+	}
 	    
-	    my $db_tie;
-	    if (-f "$dbF.lengths")
+	my $db_tie;
+	if (-f "$dbF.lengths")
+	{
+	    $db_tie = tie %$db_lengths, 'DB_File', "$dbF.lengths", O_RDONLY, 0, $DB_BTREE;
+	    $db_tie or warn "Cannot tie $dbF.lengths: $!";
+	}
+	if (!defined($db_tie))
+	{
+	    if (open(my $dbfh, "<", $dbF))
 	    {
-		$db_tie = tie %$db_lengths, 'DB_File', "$dbF.lengths", O_RDONLY, 0, $DB_BTREE;
-		$db_tie or warn "Cannot tie $dbF.lengths: $!";
+		while (my($id, $def, $seq) = gjoseqlib::read_next_fasta_seq($dbfh))
+		{
+		    $db_lengths->{$id} = length($seq);
+		}
+		close($dbfh);
 	    }
-	    if (!defined($db_tie))
+	    else
 	    {
-		if (open(my $dbfh, "<", $dbF))
-		{
-		    while (my($id, $def, $seq) = gjoseqlib::read_next_fasta_seq($dbfh))
-		    {
-			$db_lengths->{$id} = length($seq);
-		    }
-		    close($dbfh);
-		}
-		else
-		{
-		    warn "Cannot open $dbF: $!";
-		}
+		warn "Cannot open $dbF: $!";
 	    }
 	}
 	else

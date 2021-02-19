@@ -2829,7 +2829,7 @@ sub write_encoded_object
 
     if ($opts->{canonical})
     {
-        $json->canonical($1);
+        $json->canonical(1);
     }
 
     #  Once we are this far, let print supply the return value

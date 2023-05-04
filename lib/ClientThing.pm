@@ -366,16 +366,16 @@ sub ComputeURL {
         # No. Check the environment variable.
         my $envParm = $ENV{SAS_SERVER} || 'PUBSEED';
         if ($envParm eq 'SEED') {
-            $retVal = "http://servers.nmpdr.org/$name/server.cgi";
+            $retVal = "https://servers.nmpdr.org/$name/server.cgi";
         } elsif ($envParm eq 'PSEED') {
-            $retVal = "http://servers.nmpdr.org/pseed/$name/server.cgi";
+            $retVal = "https://servers.nmpdr.org/pseed/$name/server.cgi";
         } elsif ($envParm eq 'PUBSEED') {
-            $retVal = "http://pubseed.theseed.org/$name/server.cgi";
+            $retVal = "https://pubseed.theseed.org/$name/server.cgi";
         } elsif ($envParm eq 'PUBSEED_TEST') {
-            $retVal = "http://pubseed.theseed.org/saptest/$name/server.cgi";
+            $retVal = "https://pubseed.theseed.org/saptest/$name/server.cgi";
         } elsif ($envParm eq 'CORE') {
         	my $lcName = lc $name;
-        	$retVal = "http://core.theseed.org/FIG/$cgi";        	
+        	$retVal = "https://core.theseed.org/FIG/$cgi";        	
         } elsif ($envParm eq 'localhost') {
             $retVal = 'localhost';
         } else {

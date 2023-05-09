@@ -378,6 +378,9 @@ sub ComputeURL {
         	$retVal = "https://core.theseed.org/FIG/$cgi";        	
         } elsif ($envParm eq 'localhost') {
             $retVal = 'localhost';
+	} elsif ($envParm eq 'NONE') {
+	    # We are disabling access to the services.
+	    undef $retVal;
         } else {
             # Here we have a SEED sandbox. Check for the trailing slash.
             $retVal = $envParm;

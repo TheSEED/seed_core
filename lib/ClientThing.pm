@@ -28,7 +28,17 @@ package ClientThing;
     use POSIX;
     use HTTP::Message;
 
-    use constant AGENT_NAME => "SAS version 1.039";
+    #
+    # The bvbrc- prefix is required, not decorative: servers.nmpdr.org and
+    # rast.nmpdr.org sit behind Cloudflare, and the agreement with its
+    # administrator is that our traffic is identified by a bvbrc-* agent and a
+    # rule admits that family. The bare "SAS version 1.039" would not match it.
+    #
+    # The version is kept rather than replaced -- it is the SAS protocol
+    # version, and prefixing preserves it for anyone reading an access log.
+    # Nothing parses this string: it is referenced only where it is set below.
+    #
+    use constant AGENT_NAME => "bvbrc-sas-perl/1.039";
 
 =head1 Base Class for Server Helper Objects
 

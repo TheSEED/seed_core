@@ -28,7 +28,7 @@ package ClientThing;
     use POSIX;
     use HTTP::Message;
 
-    use constant AGENT_NAME => "SAS version 1.039";
+    use constant AGENT_NAME => "SAS version 1.039 RAST";
 
 =head1 Base Class for Server Helper Objects
 
@@ -142,13 +142,21 @@ sub new {
     # the user agent is actually a SAP object.
     my $server_url = $url;
     my $ua;
+    my $timeout;
     if ($server_url ne 'localhost') {
         # Create the user agent.
         require LWP::UserAgent;
         $ua = LWP::UserAgent->new();
 	$ua->agent(AGENT_NAME . " ($^O $^V)");
-        # Set the default timeout to 20 minutes.
-	my $timeout = 20 * 60;
+	# Optional per-deployment marker so self-calls / specific installs can be
+        # spotted in access logs without having to trace source IPs back by hand,
+        # e.g. SAS_CLIENT_TAG=rast-prod-5120 -> "...(linux v5.38.0) [rast-prod-5120]"
+        my $client_tag = $ENV{SAS_CLIENT_TAG} ? " [$ENV{SAS_CLIENT_TAG}]" : "";
+        $ua->agent(AGENT_NAME . " ($^O $^V)" . $client_tag);
+
+        # Set the default timeout to 20 minutes. This bounds a single attempt;
+        # see SAS_DEADLINE in _send_request for the bound across all attempts.
+	$timeout = 20 * 60;
 	if (exists($ENV{SAS_TIMEOUT}))
 	{
 	    $timeout = $ENV{SAS_TIMEOUT};
@@ -177,6 +185,7 @@ sub new {
                     ua => $ua,
                     singleton => $singleton,
 		    accept_encoding => $accept_encoding,
+		    timeout => $timeout,
                     dbName => undef,
                  };
     # Bless it.
@@ -673,9 +682,34 @@ sub _send_request {
     # we run out the call will fail.
     #
 
-    my @retries = (1, 2, 5, 10, 20, 60, 60, 60, 60, 60, 60);
-    my %codes_to_retry =  map { $_ => 1 } qw(110 408 502 503 504 200) ;
+    my @retries = (1, 2, 4, 8);
+
+    #
+    # 503 and 504 are deliberately absent. They are what an overloaded server
+    # returns, so retrying them adds load to the side that is already failing;
+    # that feedback loop is how a server slowdown becomes a client outage.
+    # Fail fast on those and let the caller decide.
+    #
+    my %codes_to_retry =  map { $_ => 1 } qw(110 408 502 200) ;
     my $response;
+
+    #
+    # SAS_DEADLINE, if set, is a total wall-clock budget in seconds covering
+    # every attempt and every inter-attempt sleep for this one call.
+    #
+    # SAS_TIMEOUT only bounds a single attempt, so on its own it still permits
+    # timeout * (@retries + 1) seconds of blocking. That is the hazard for a
+    # server-side caller: a handful of Starman workers can all be parked in
+    # here for the length of the full schedule. A deadline bounds the whole
+    # call no matter how the per-attempt timeout is configured.
+    #
+    # Enforced in two places below: each attempt's timeout is clamped to the
+    # time remaining, and a retry is abandoned if its sleep would overrun.
+    # Unset means no overall cap, which is the historical behavior and what
+    # batch callers that legitimately run for tens of minutes still get.
+    #
+    my $deadline = $ENV{SAS_DEADLINE};
+    my $started = time;
 
     my $parms;
     if (@parms == 1 && ref($parms[0]))
@@ -688,14 +722,52 @@ sub _send_request {
     }
 
     while (1) {
-        $response = $ua->post($self->{server_url}, $parms,
-			      @{$self->{accept_encoding}},
-			     );
-        if ($response->is_success) {
-            my $retVal = $response->decoded_content;
-            return $retVal;
-        }
+	#
+	# The configured per-attempt timeout. Fall back to whatever the agent
+	# already carries for objects not built by our constructor.
+	#
+	my $configured = $self->{timeout} || $ua->timeout;
 
+	if ($deadline)
+	{
+	    my $remaining = $deadline - (time - $started);
+	    if ($remaining <= 0)
+	    {
+		confess "SAS deadline of ${deadline}s exhausted contacting $self->{server_url}";
+	    }
+	    #
+	    # Clamp this attempt to what is left of the budget. We compare
+	    # against the configured value rather than the agent's current one
+	    # so that repeated clamping never ratchets the timeout down across
+	    # successive calls on this same object.
+	    #
+	    $ua->timeout($remaining < $configured ? $remaining : $configured);
+	}
+	else
+	{
+	    #
+	    # No budget in force. Undo any clamp left by an earlier call.
+	    #
+	    $ua->timeout($configured);
+	}
+	warn "[", _ts(), "] BEGIN post $self->{server_url} @$parms\n"
+	    if ($ENV{DEBUG} && $ENV{VERBOSE});
+	$response = $ua->post($self->{server_url}, $parms, @{$self->{accept_encoding}});
+	warn "[", _ts(), "] END   post status=", $response->code, "\n"
+	    if ($ENV{DEBUG} && $ENV{VERBOSE});
+	
+	if ($response->is_success) {
+	    my $retVal = $response->decoded_content;
+	    if ($ENV{DEBUG} && $ENV{VERBOSE}) {
+		warn "[", _ts(), "] STATUS: ", $response->status_line, "\n";
+		warn "[", _ts(), "] CONTENT-LENGTH header: ", ($response->header('Content-Length') // 'absent'), "\n";
+		warn "[", _ts(), "] CONTENT-ENCODING header: ", ($response->header('Content-Encoding') // 'absent'), "\n";
+		warn "[", _ts(), "] decoded_content length: ", (defined $retVal ? length($retVal) : 'undef'), "\n";
+		warn "[", _ts(), "] raw content length: ", length($response->content), "\n";
+	    }
+	    return $retVal;
+	}
+	
         #
         # If this is not one of the error codes we retry for, or if we
         # are out of retries, fail immediately
@@ -741,6 +813,19 @@ sub _send_request {
         # otherwise, sleep & loop.
         #
         my $retry_time = shift(@retries);
+
+        #
+        # Do not start a sleep we cannot afford to finish.
+        #
+        if ($deadline)
+        {
+            my $elapsed = time - $started;
+            if ($elapsed + $retry_time >= $deadline)
+            {
+                confess "SAS deadline of ${deadline}s reached after ${elapsed}s contacting $self->{server_url}: " . $response->status_line;
+            }
+        }
+
         print STDERR strftime("%F %T", localtime), ": Request failed with code=$code msg=$msg, sleeping $retry_time and retrying\n";
         sleep($retry_time);
 
@@ -751,5 +836,13 @@ sub _send_request {
     #
 }
 
+use Time::HiRes qw(gettimeofday);
+use POSIX qw(strftime);
+
+sub _ts {
+    my ($sec, $usec) = gettimeofday();
+    return strftime("%Y-%m-%d %H:%M:%S", localtime($sec))
+	. sprintf(".%06d", $usec);
+}
 
 1;

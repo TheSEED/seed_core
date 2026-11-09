@@ -56,6 +56,7 @@ sub new
 #    return bless $self, $class;
 
     my $self = $class->SUPER::new(ANNO => %options);
+    warn "ANNOserver url => ", $options{url} // 'undef', "\n" if $ENV{DEBUG};
     return $self;
 }
 
@@ -631,8 +632,16 @@ sub run_query
 sub run_query_form
 {
     my($self, $form, $raw) = @_;
-
+    
     my $res = $self->_send_request($form);
+    if ($ENV{DEBUG} and not defined($res)) {
+	warn "_send_request returned undef\n";
+    } elsif ($res eq '') {
+	warn "_send_request returned empty string\n";
+    } else {
+	warn "_send_request returned: length=", length($res),
+	    " first 200 chars: ", substr($res, 0, 200), "\n";
+    }
     #my $res = $self->{ua}->post($self->{server_url}, $form);
     
     if ($res)
